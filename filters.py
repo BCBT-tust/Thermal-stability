@@ -5,7 +5,7 @@ Filters Module
 
 from typing import List, Tuple, Optional, Dict
 import numpy as np
-from .geometry import calculate_distance
+from geometry import calculate_distance
 
 
 class SequenceFilter:
