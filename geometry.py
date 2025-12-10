@@ -196,7 +196,7 @@ def check_disulfide_geometry(ca1: np.ndarray, cb1: np.ndarray,
         if cb_dist < 3.5 or cb_dist > 4.5:
             return False, {}
     else:  # relaxed
-        if cb_dist < 3.0 or cb_dist > 5.0:
+        if cb_dist < 2.6 or cb_dist > 6.5:
             return False, {}
     
     # 3. DbD2风格：SG-SG距离检查
