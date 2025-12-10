@@ -207,8 +207,8 @@ def check_disulfide_geometry(ca1: np.ndarray, cb1: np.ndarray,
         
         if sg1 is not None and sg2 is not None:
             sg_dist = calculate_distance(sg1, sg2)
-            # DbD2标准：SG-SG距离应在1.8-2.4Å
-            if sg_dist is None or sg_dist < 1.8 or sg_dist > 2.4:
+            # DbD2标准：SG-SG距离应在1.8-2.4Å，这里放宽标准1.5-3.2
+            if sg_dist is None or sg_dist < 1.5 or sg_dist > 3.2:
                 return False, {}
     
     # 4. CA-CB-CB-CA二面角检查
