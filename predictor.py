@@ -1,6 +1,6 @@
 """
 Disulfide Bond Predictor Module
-二硫键预测主模块：整合所有功能，使用BioPython解析
+二硫键预测主模块：使用BioPython解析
 """
 
 from typing import List, Dict, Optional, Tuple
@@ -8,15 +8,26 @@ import numpy as np
 from Bio.PDB import PDBParser, PDBIO
 from Bio.PDB.Polypeptide import is_aa
 
-from .geometry import (
+from geometry import (
     check_disulfide_geometry,
     calculate_distance,
     calculate_bfactor_average,
     estimate_cb_position
 )
-from .filters import CompositeFilter
-from .pdb_parser import three_to_one
+from filters import CompositeFilter
 
+# 三字母到单字母映射
+AA_MAP = {
+    'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E',
+    'PHE': 'F', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LYS': 'K', 'LEU': 'L', 'MET': 'M', 'ASN': 'N',
+    'PRO': 'P', 'GLN': 'Q', 'ARG': 'R', 'SER': 'S',
+    'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
+}
+
+def three_to_one(three_letter: str) -> str:
+    """三字母代码转单字母"""
+    return AA_MAP.get(three_letter.upper(), three_letter[0])
 
 class DisulfideCandidate:
     """二硫键候选数据类"""
