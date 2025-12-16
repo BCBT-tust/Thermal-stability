@@ -41,7 +41,7 @@ class FoldXWrapper:
                 timeout=5
             )
             
-            # FoldX 通常在没有参数时返回非0，但会有输出
+            # FoldX通常在没有参数时返回非0,但会有输出
             if result.stdout or result.stderr:
                 if self.verbose:
                     print(f"✓ FoldX available at: {self.foldx_path}")
@@ -62,13 +62,13 @@ class FoldXWrapper:
     def calculate_ddg(self, pdb_file: str, mutations: List[str], 
                      n_runs: int = 3, timeout: int = 300) -> Dict:
         """
-        计算突变的ΔΔG（稳定性变化）
+        计算突变的ΔΔG(稳定性变化)
         
         Args:
             pdb_file: PDB文件路径
-            mutations: 突变列表，格式 ['TA45C', 'SA125C']
-            n_runs: FoldX运行次数（取平均）
-            timeout: 超时时间（秒）
+            mutations: 突变列表,格式 ['TA45C', 'SA125C']
+            n_runs: FoldX运行次数(取平均)
+            timeout: 超时时间(秒)
         
         Returns:
             结果字典 {'ddg': float, 'success': bool, 'error': str}
@@ -93,7 +93,7 @@ class FoldXWrapper:
                 # 创建突变列表文件
                 mut_file = os.path.join(temp_dir, "individual_list.txt")
                 with open(mut_file, 'w') as f:
-                    # FoldX格式：TA45C,SA125C;
+                    # FoldX格式: TA45C,SA125C;
                     mutation_str = ",".join(mutations)
                     f.write(f"{mutation_str};\n")
                 
@@ -121,9 +121,11 @@ class FoldXWrapper:
                 
                 if self.verbose:
                     print(f"FoldX execution time: {elapsed:.1f}s")
+                    if result.returncode != 0:
+                        print(f"FoldX return code: {result.returncode}")
                 
-                # 解析结果
-                ddg = self._parse_foldx_output(temp_dir, Path(pdb_file).stem)
+                # 解析结果 - 改进的解析逻辑
+                ddg = self._parse_foldx_output(temp_dir, Path(pdb_file).stem, mutations)
                 
                 if ddg is not None:
                     return {
@@ -133,6 +135,12 @@ class FoldXWrapper:
                         'elapsed_time': elapsed
                     }
                 else:
+                    # 调试: 打印所有输出文件
+                    if self.verbose:
+                        print(f"Available files in {temp_dir}:")
+                        for f in os.listdir(temp_dir):
+                            print(f"  - {f}")
+                    
                     return {
                         'ddg': None,
                         'success': False,
@@ -154,53 +162,92 @@ class FoldXWrapper:
                     'error': str(e)
                 }
     
-    def _parse_foldx_output(self, work_dir: str, pdb_stem: str) -> Optional[float]:
+    def _parse_foldx_output(self, work_dir: str, pdb_stem: str, 
+                           mutations: List[str]) -> Optional[float]:
         """
-        解析FoldX输出文件
+        解析FoldX输出文件 - 改进版本
         
         Args:
             work_dir: FoldX工作目录
-            pdb_stem: PDB文件名（不含扩展名）
+            pdb_stem: PDB文件名(不含扩展名)
+            mutations: 突变列表(用于调试)
         
         Returns:
-            ΔΔG值，失败返回None
+            ΔΔG值,失败返回None
         """
-        # FoldX输出文件命名模式
+        # FoldX BuildModel输出文件模式
+        # 优先级: Dif_ > Average_
         possible_files = [
-            f"Average_{pdb_stem}_1.fxout",
+            f"Dif_{pdb_stem}.fxout",
             f"Average_{pdb_stem}.fxout",
             f"Dif_{pdb_stem}_1.fxout",
-            f"Dif_{pdb_stem}.fxout"
+            f"Average_{pdb_stem}_1.fxout",
         ]
         
+        # 遍历所有可能的输出文件
         for filename in possible_files:
             filepath = os.path.join(work_dir, filename)
             
             if os.path.exists(filepath):
+                if self.verbose:
+                    print(f"  Parsing: {filename}")
+                
                 try:
                     with open(filepath, 'r') as f:
                         lines = f.readlines()
+                    
+                    # FoldX输出格式分析:
+                    # Dif文件: 包含ΔΔG (wild-type vs mutant的能量差)
+                    # Average文件: 包含多次运行的平均值
+                    
+                    # 查找数据行(跳过注释和空行)
+                    for i, line in enumerate(lines):
+                        # 跳过注释行
+                        if line.startswith('#') or not line.strip():
+                            continue
                         
-                        # 跳过头部，找到数据行
-                        for line in lines:
-                            if line.startswith('#') or not line.strip():
-                                continue
+                        # 尝试解析数据行
+                        parts = line.strip().split()
+                        
+                        if len(parts) < 2:
+                            continue
+                        
+                        # FoldX Dif文件格式:
+                        # 列1: PDB名称或突变描述
+                        # 列2: total energy (ΔΔG)
+                        # 其他列: 各种能量分量
+                        
+                        try:
+                            # 尝试解析第2列作为ΔΔG
+                            ddg = float(parts[1])
                             
-                            parts = line.strip().split()
+                            if self.verbose:
+                                print(f"  Found ΔΔG: {ddg:.2f} kcal/mol")
+                                print(f"  Full line: {line.strip()[:100]}")
                             
-                            # FoldX输出格式：通常第二列是total energy
-                            if len(parts) >= 2:
-                                try:
-                                    # 尝试解析能量值
-                                    ddg = float(parts[1])
-                                    return ddg
-                                except ValueError:
-                                    continue
+                            return ddg
+                        
+                        except ValueError:
+                            # 如果第2列不是数字,可能是表头,跳过
+                            continue
                 
                 except Exception as e:
                     if self.verbose:
-                        print(f"Error parsing {filename}: {str(e)}")
+                        print(f"  Error parsing {filename}: {str(e)}")
                     continue
+        
+        # 如果都失败,尝试列出所有.fxout文件
+        if self.verbose:
+            print(f"  Looking for any .fxout files...")
+            for f in os.listdir(work_dir):
+                if f.endswith('.fxout'):
+                    print(f"    Found: {f}")
+                    try:
+                        with open(os.path.join(work_dir, f), 'r') as fh:
+                            content = fh.read()
+                            print(f"      Content preview: {content[:200]}")
+                    except:
+                        pass
         
         return None
 
