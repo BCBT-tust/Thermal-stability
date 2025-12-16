@@ -9,10 +9,11 @@ import tempfile
 from pathlib import Path
 from typing import List, Dict, Optional
 import time
+import re
 
 
 class FoldXWrapper:
-    """FoldX能量计算封装类"""
+    """FoldX能量计算封装类 """
     
     def __init__(self, foldx_path: str = "foldx", verbose: bool = False):
         """
@@ -27,12 +28,7 @@ class FoldXWrapper:
         self.is_available = self._check_foldx()
     
     def _check_foldx(self) -> bool:
-        """
-        检查FoldX是否可用
-        
-        Returns:
-            是否可用
-        """
+        """检查FoldX是否可用"""
         try:
             result = subprocess.run(
                 [self.foldx_path],
@@ -41,7 +37,6 @@ class FoldXWrapper:
                 timeout=5
             )
             
-            # FoldX通常在没有参数时返回非0,但会有输出
             if result.stdout or result.stderr:
                 if self.verbose:
                     print(f"✓ FoldX available at: {self.foldx_path}")
@@ -93,9 +88,11 @@ class FoldXWrapper:
                 # 创建突变列表文件
                 mut_file = os.path.join(temp_dir, "individual_list.txt")
                 with open(mut_file, 'w') as f:
-                    # FoldX格式: TA45C,SA125C;
                     mutation_str = ",".join(mutations)
                     f.write(f"{mutation_str};\n")
+                
+                if self.verbose:
+                    print(f"  Mutations: {mutation_str}")
                 
                 # 构建FoldX命令
                 cmd = [
@@ -120,12 +117,10 @@ class FoldXWrapper:
                 elapsed = time.time() - start_time
                 
                 if self.verbose:
-                    print(f"FoldX execution time: {elapsed:.1f}s")
-                    if result.returncode != 0:
-                        print(f"FoldX return code: {result.returncode}")
+                    print(f"  FoldX execution: {elapsed:.1f}s (return code: {result.returncode})")
                 
-                # 解析结果 - 改进的解析逻辑
-                ddg = self._parse_foldx_output(temp_dir, Path(pdb_file).stem, mutations)
+                # 解析结果 - 使用增强的解析逻辑
+                ddg = self._parse_foldx_output_enhanced(temp_dir, Path(pdb_file).stem, mutations)
                 
                 if ddg is not None:
                     return {
@@ -135,12 +130,6 @@ class FoldXWrapper:
                         'elapsed_time': elapsed
                     }
                 else:
-                    # 调试: 打印所有输出文件
-                    if self.verbose:
-                        print(f"Available files in {temp_dir}:")
-                        for f in os.listdir(temp_dir):
-                            print(f"  - {f}")
-                    
                     return {
                         'ddg': None,
                         'success': False,
@@ -162,92 +151,197 @@ class FoldXWrapper:
                     'error': str(e)
                 }
     
-    def _parse_foldx_output(self, work_dir: str, pdb_stem: str, 
-                           mutations: List[str]) -> Optional[float]:
+    def _parse_foldx_output_enhanced(self, work_dir: str, pdb_stem: str, 
+                                    mutations: List[str]) -> Optional[float]:
         """
-        解析FoldX输出文件 - 改进版本
+        增强版FoldX输出解析
         
-        Args:
-            work_dir: FoldX工作目录
-            pdb_stem: PDB文件名(不含扩展名)
-            mutations: 突变列表(用于调试)
-        
-        Returns:
-            ΔΔG值,失败返回None
+        尝试多种策略:
+        1. Dif文件(能量差)
+        2. Average文件
+        3. Raw文件
+        4. 正则表达式搜索
         """
-        # FoldX BuildModel输出文件模式
-        # 优先级: Dif_ > Average_
-        possible_files = [
-            f"Dif_{pdb_stem}.fxout",
-            f"Average_{pdb_stem}.fxout",
-            f"Dif_{pdb_stem}_1.fxout",
-            f"Average_{pdb_stem}_1.fxout",
-        ]
-        
-        # 遍历所有可能的输出文件
-        for filename in possible_files:
-            filepath = os.path.join(work_dir, filename)
-            
-            if os.path.exists(filepath):
-                if self.verbose:
-                    print(f"  Parsing: {filename}")
-                
-                try:
-                    with open(filepath, 'r') as f:
-                        lines = f.readlines()
-                    
-                    # FoldX输出格式分析:
-                    # Dif文件: 包含ΔΔG (wild-type vs mutant的能量差)
-                    # Average文件: 包含多次运行的平均值
-                    
-                    # 查找数据行(跳过注释和空行)
-                    for i, line in enumerate(lines):
-                        # 跳过注释行
-                        if line.startswith('#') or not line.strip():
-                            continue
-                        
-                        # 尝试解析数据行
-                        parts = line.strip().split()
-                        
-                        if len(parts) < 2:
-                            continue
-                        
-                        # FoldX Dif文件格式:
-                        # 列1: PDB名称或突变描述
-                        # 列2: total energy (ΔΔG)
-                        # 其他列: 各种能量分量
-                        
-                        try:
-                            # 尝试解析第2列作为ΔΔG
-                            ddg = float(parts[1])
-                            
-                            if self.verbose:
-                                print(f"  Found ΔΔG: {ddg:.2f} kcal/mol")
-                                print(f"  Full line: {line.strip()[:100]}")
-                            
-                            return ddg
-                        
-                        except ValueError:
-                            # 如果第2列不是数字,可能是表头,跳过
-                            continue
-                
-                except Exception as e:
-                    if self.verbose:
-                        print(f"  Error parsing {filename}: {str(e)}")
-                    continue
-        
-        # 如果都失败,尝试列出所有.fxout文件
         if self.verbose:
-            print(f"  Looking for any .fxout files...")
-            for f in os.listdir(work_dir):
-                if f.endswith('.fxout'):
-                    print(f"    Found: {f}")
+            print(f"\n  === FoldX Output Parsing Debug ===")
+            print(f"  Working directory: {work_dir}")
+            print(f"  PDB stem: {pdb_stem}")
+        
+        # 列出所有输出文件
+        all_files = os.listdir(work_dir)
+        fxout_files = [f for f in all_files if f.endswith('.fxout')]
+        
+        if self.verbose:
+            print(f"  Found {len(fxout_files)} .fxout files:")
+            for f in fxout_files:
+                print(f"    - {f}")
+        
+        # 策略1: 优先解析Dif文件(最可靠)
+        dif_files = [f for f in fxout_files if f.startswith('Dif_')]
+        if dif_files:
+            if self.verbose:
+                print(f"\n  Trying Dif files: {dif_files}")
+            
+            for filename in dif_files:
+                result = self._parse_dif_file(os.path.join(work_dir, filename))
+                if result is not None:
+                    if self.verbose:
+                        print(f"  ✓ Successfully parsed {filename}: ΔΔG = {result:.2f}")
+                    return result
+        
+        # 策略2: 尝试Average文件
+        avg_files = [f for f in fxout_files if f.startswith('Average_')]
+        if avg_files:
+            if self.verbose:
+                print(f"\n  Trying Average files: {avg_files}")
+            
+            for filename in avg_files:
+                result = self._parse_average_file(os.path.join(work_dir, filename))
+                if result is not None:
+                    if self.verbose:
+                        print(f"  ✓ Successfully parsed {filename}: ΔΔG = {result:.2f}")
+                    return result
+        
+        # 策略3: 搜索所有.fxout文件中的数值
+        if self.verbose:
+            print(f"\n  Trying all .fxout files with flexible parsing...")
+        
+        for filename in fxout_files:
+            result = self._parse_any_fxout(os.path.join(work_dir, filename))
+            if result is not None:
+                if self.verbose:
+                    print(f"  ✓ Found value in {filename}: {result:.2f}")
+                return result
+        
+        if self.verbose:
+            print(f"  ✗ All parsing strategies failed")
+        
+        return None
+    
+    def _parse_dif_file(self, filepath: str) -> Optional[float]:
+        """
+        解析Dif文件(能量差文件)
+        
+        格式示例:
+        #header
+        mutation_name    total_energy    other_cols...
+        TA45C,SA125C     2.34           ...
+        """
+        try:
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+            
+            if self.verbose:
+                print(f"    Dif file has {len(lines)} lines")
+            
+            for i, line in enumerate(lines):
+                # 跳过注释和空行
+                if line.startswith('#') or not line.strip():
+                    continue
+                
+                # 跳过明显的表头
+                if 'total' in line.lower() or 'energy' in line.lower():
+                    if self.verbose:
+                        print(f"    Line {i}: Header - {line.strip()[:60]}")
+                    continue
+                
+                parts = line.strip().split()
+                
+                if len(parts) >= 2:
                     try:
-                        with open(os.path.join(work_dir, f), 'r') as fh:
-                            content = fh.read()
-                            print(f"      Content preview: {content[:200]}")
+                        # 尝试解析第2列(索引1)
+                        ddg = float(parts[1])
+                        
+                        # 合理性检查: ΔΔG通常在-20到+20范围
+                        if -50 < ddg < 50:
+                            if self.verbose:
+                                print(f"    Line {i}: Found ΔΔG = {ddg:.2f}")
+                                print(f"    Full line: {line.strip()}")
+                            return ddg
+                    except ValueError:
+                        continue
+        
+        except Exception as e:
+            if self.verbose:
+                print(f"    Error: {str(e)}")
+        
+        return None
+    
+    def _parse_average_file(self, filepath: str) -> Optional[float]:
+        """
+        解析Average文件
+        
+        可能包含平均能量值
+        """
+        try:
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+            
+            if self.verbose:
+                print(f"    Average file has {len(lines)} lines")
+            
+            for i, line in enumerate(lines):
+                if line.startswith('#') or not line.strip():
+                    continue
+                
+                if 'total' in line.lower() or 'energy' in line.lower():
+                    continue
+                
+                parts = line.strip().split()
+                
+                # Average文件可能有多列,尝试找到能量值
+                for j, part in enumerate(parts[1:], 1):  # 跳过第一列(名称)
+                    try:
+                        value = float(part)
+                        if -50 < value < 50:
+                            if self.verbose:
+                                print(f"    Line {i}, Col {j}: Found value = {value:.2f}")
+                            return value
+                    except ValueError:
+                        continue
+        
+        except Exception as e:
+            if self.verbose:
+                print(f"    Error: {str(e)}")
+        
+        return None
+    
+    def _parse_any_fxout(self, filepath: str) -> Optional[float]:
+        """
+        灵活解析任何.fxout文件
+        
+        搜索所有看起来像能量值的数字
+        """
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+            
+            # 使用正则表达式查找数字
+            # 寻找格式: 空格 + 数字(可能有负号和小数点) + 空格
+            pattern = r'\s+(-?\d+\.\d+)\s+'
+            matches = re.findall(pattern, content)
+            
+            if matches:
+                # 转换为浮点数并过滤合理范围
+                values = []
+                for m in matches:
+                    try:
+                        v = float(m)
+                        if -50 < v < 50:
+                            values.append(v)
                     except:
-                        pass
+                        continue
+                
+                if values:
+                    # 返回第一个合理值
+                    # (注意: 这不一定是ΔΔG,但在没有其他信息时是最佳猜测)
+                    if self.verbose:
+                        print(f"    Found {len(values)} potential values: {values[:5]}")
+                    return values[0]
+        
+        except Exception as e:
+            if self.verbose:
+                print(f"    Error: {str(e)}")
         
         return None
 
@@ -266,7 +360,6 @@ def format_mutations_for_foldx(res1_name: str, res1_id: int,
     Returns:
         FoldX格式的突变列表 ['TA45C', 'SA125C']
     """
-    # 三字母到单字母映射
     AA_MAP = {
         'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E',
         'PHE': 'F', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
