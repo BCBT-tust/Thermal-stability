@@ -1,6 +1,5 @@
 """
 FoldX Wrapper Module
-FoldX能量计算封装模块 - 完整修复版
 """
 
 import os
@@ -12,27 +11,15 @@ import time
 
 
 class FoldXWrapper:
-    """FoldX能量计算封装类"""
     
     def __init__(self, foldx_path: str = "foldx", verbose: bool = False):
-        """
-        初始化FoldX封装器
-        
-        Args:
-            foldx_path: FoldX可执行文件路径
-            verbose: 是否打印详细信息
-        """
+
         self.foldx_path = foldx_path
         self.verbose = verbose
         self.is_available = self._check_foldx()
     
     def _check_foldx(self) -> bool:
-        """
-        检查FoldX是否可用
-        
-        Returns:
-            是否可用
-        """
+
         try:
             result = subprocess.run(
                 [self.foldx_path],
@@ -63,15 +50,6 @@ class FoldXWrapper:
                      n_runs: int = 3, timeout: int = 300) -> Dict:
         """
         计算突变的ΔΔG(稳定性变化)
-        
-        Args:
-            pdb_file: PDB文件路径
-            mutations: 突变列表,格式 ['SA49C', 'SA68C']
-            n_runs: FoldX运行次数(取平均)
-            timeout: 超时时间(秒)
-        
-        Returns:
-            结果字典 {'ddg': float, 'success': bool, 'error': str}
         """
         if not self.is_available:
             return {
@@ -80,17 +58,14 @@ class FoldXWrapper:
                 'error': 'FoldX not available'
             }
         
-        # 创建临时工作目录
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # 复制PDB文件到工作目录
                 pdb_name = Path(pdb_file).name
                 work_pdb = os.path.join(temp_dir, pdb_name)
                 
                 import shutil
                 shutil.copy(pdb_file, work_pdb)
                 
-                # 创建突变列表文件
                 mut_file = os.path.join(temp_dir, "individual_list.txt")
                 with open(mut_file, 'w') as f:
                     # FoldX格式: SA49C,SA68C;
@@ -98,9 +73,8 @@ class FoldXWrapper:
                     f.write(f"{mutation_str};\n")
                 
                 if self.verbose:
-                    print(f"  突变: {mutation_str}")
-                
-                # 构建FoldX命令
+                    print(f"  Mutant: {mutation_str}")
+
                 cmd = [
                     self.foldx_path,
                     "--command=BuildModel",
@@ -109,7 +83,6 @@ class FoldXWrapper:
                     f"--numberOfRuns={n_runs}"
                 ]
                 
-                # 执行FoldX
                 start_time = time.time()
                 
                 result = subprocess.run(
@@ -125,7 +98,6 @@ class FoldXWrapper:
                 if self.verbose:
                     print(f"  FoldX执行时间: {elapsed:.1f}秒")
                 
-                # 解析结果
                 ddg = self._parse_foldx_output(temp_dir, Path(pdb_file).stem)
                 
                 if ddg is not None:
