@@ -66,35 +66,6 @@ class FoldXWrapper:
                 import shutil
                 shutil.copy(pdb_file, work_pdb)
                 
-                for rotabase_candidate in [
-                    os.path.join(os.path.dirname(self.foldx_path), "rotabase.txt"),
-                    "/usr/local/bin/rotabase.txt",
-                    "/content/rotabase.txt",
-                    "/content/foldx_extracted/rotabase.txt",
-                ]:
-                    if os.path.isfile(rotabase_candidate):
-                        shutil.copy(rotabase_candidate, os.path.join(temp_dir, "rotabase.txt"))
-                        if self.verbose:
-                            print(f"  ✓ rotabase.txt 已复制到工作目录")
-                        break
-                else:
-                    # 递归搜索
-                    for search_dir in ["/content/foldx_extracted", "/content"]:
-                        if os.path.isdir(search_dir):
-                            for root, _dirs, _files in os.walk(search_dir):
-                                if "rotabase.txt" in _files:
-                                    shutil.copy(os.path.join(root, "rotabase.txt"),
-                                                os.path.join(temp_dir, "rotabase.txt"))
-                                    if self.verbose:
-                                        print(f"  ✓ rotabase.txt 找到并复制: {root}")
-                                    break
-                            else:
-                                continue
-                            break
-                    else:
-                        if self.verbose:
-                            print(f"  ⚠️ rotabase.txt 未找到! FoldX 将无法正常运行")
-                
                 mut_file = os.path.join(temp_dir, "individual_list.txt")
                 with open(mut_file, 'w') as f:
                     # FoldX格式: SA49C,SA68C;
@@ -166,30 +137,56 @@ class FoldXWrapper:
                 }
     
     def _parse_foldx_output(self, work_dir: str, pdb_stem: str) -> Optional[float]:
-        all_files = os.listdir(work_dir)
-        fxout_files = sorted([f for f in all_files if f.endswith('.fxout')])
+        """
+        解析FoldX输出文件 - 修复版
         
-        if self.verbose and fxout_files:
-            print(f"  找到 {len(fxout_files)} 个 .fxout 文件: {fxout_files}")
+        优先查找Dif文件(能量差文件),正确解析tab分隔的数据
         
-        dif_files = [f for f in fxout_files if f.startswith('Dif_')]
-        for dif_file in dif_files:
-            ddg = self._parse_dif_file(os.path.join(work_dir, dif_file))
+        Args:
+            work_dir: FoldX工作目录
+            pdb_stem: PDB文件名(不含扩展名)
+        
+        Returns:
+            ΔΔG值,失败返回None
+        """
+        # 优先级1: Dif文件(最可靠)
+        dif_file = os.path.join(work_dir, f"Dif_{pdb_stem}.fxout")
+        
+        if os.path.exists(dif_file):
+            ddg = self._parse_dif_file(dif_file)
             if ddg is not None:
                 return ddg
         
-        avg_files = [f for f in fxout_files if f.startswith('Average_')]
-        for avg_file in avg_files:
-            ddg = self._parse_average_file(os.path.join(work_dir, avg_file))
+        # 优先级2: Average文件
+        avg_file = os.path.join(work_dir, f"Average_{pdb_stem}.fxout")
+        
+        if os.path.exists(avg_file):
+            ddg = self._parse_average_file(avg_file)
             if ddg is not None:
                 return ddg
         
+        # 都失败了
         if self.verbose:
             print(f"  ⚠️ 未找到可解析的输出文件")
         
         return None
     
     def _parse_dif_file(self, filepath: str) -> Optional[float]:
+        """
+        解析Dif文件(能量差文件)
+        
+        Dif文件格式(tab分隔):
+        Line 1-8: 头部信息
+        Line 9: 表头(Pdb  total energy  Backbone Hbond  ...)
+        Line 10: 数据(XynA_1.pdb  0.219481  -0.44596  ...)
+                              ^^^^^^^^ 这是ΔΔG
+        
+        Args:
+            filepath: Dif文件路径
+        
+        Returns:
+            ΔΔG值
+        """
         try:
             with open(filepath, 'r') as f:
                 lines = f.readlines()
@@ -198,9 +195,11 @@ class FoldXWrapper:
                 print(f"  解析Dif文件: {os.path.basename(filepath)} ({len(lines)}行)")
             
             for i, line in enumerate(lines):
+                # 跳过注释
                 if line.startswith('#') or line.startswith('FoldX'):
                     continue
                 
+                # 跳过空行
                 if not line.strip():
                     continue
                 
@@ -210,10 +209,14 @@ class FoldXWrapper:
                         print(f"    第{i+1}行: 表头,跳过")
                     continue
                 
+                # 解析数据行
+                # 注意:FoldX使用tab分隔,不是空格!
                 parts = line.strip().split('\t')
                 
                 if len(parts) >= 2:
                     try:
+                        # 第1列: PDB文件名
+                        # 第2列: total energy差值(ΔΔG)
                         pdb_name = parts[0]
                         ddg = float(parts[1])
                         
@@ -234,6 +237,17 @@ class FoldXWrapper:
         return None
     
     def _parse_average_file(self, filepath: str) -> Optional[float]:
+        """
+        解析Average文件
+        
+        格式类似Dif文件,但包含标准差列
+        
+        Args:
+            filepath: Average文件路径
+        
+        Returns:
+            ΔΔG平均值
+        """
         try:
             with open(filepath, 'r') as f:
                 lines = f.readlines()
@@ -242,6 +256,7 @@ class FoldXWrapper:
                 print(f"  解析Average文件: {os.path.basename(filepath)} ({len(lines)}行)")
             
             for i, line in enumerate(lines):
+                # 同样的过滤逻辑
                 if (line.startswith('#') or 
                     line.startswith('FoldX') or
                     not line.strip() or
@@ -249,6 +264,7 @@ class FoldXWrapper:
                     'Pdb\t' in line):
                     continue
                 
+                # Tab分隔
                 parts = line.strip().split('\t')
                 
                 if len(parts) >= 3:
@@ -281,6 +297,28 @@ class FoldXWrapper:
 def format_mutations_for_foldx(res1_name: str, res1_id: int, 
                                res2_name: str, res2_id: int,
                                chain: str = 'A') -> List[str]:
+    """
+    格式化突变为FoldX格式
+    
+    Args:
+        res1_name: 残基1的三字母名称(如'SER')
+        res1_id: 残基1的序列号(如49)
+        res2_name: 残基2的三字母名称(如'SER')
+        res2_id: 残基2的序列号(如68)
+        chain: 链ID(默认'A')
+    
+    Returns:
+        FoldX格式的突变列表
+        例如: ['SA49C', 'SA68C']
+        格式说明: {原残基单字母}{链ID}{位置}{目标残基}
+    
+    Examples:
+        >>> format_mutations_for_foldx('SER', 49, 'SER', 68, 'A')
+        ['SA49C', 'SA68C']
+        
+        >>> format_mutations_for_foldx('ALA', 244, 'SER', 284, 'A')
+        ['AA244C', 'SA284C']
+    """
     # 三字母到单字母映射
     AA_MAP = {
         'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E',
@@ -290,9 +328,12 @@ def format_mutations_for_foldx(res1_name: str, res1_id: int,
         'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
     }
     
+    # 转换为单字母代码
     res1_letter = AA_MAP.get(res1_name.upper(), res1_name[0].upper())
     res2_letter = AA_MAP.get(res2_name.upper(), res2_name[0].upper())
     
+    # FoldX格式: {原残基}{链ID}{位置}{目标残基}
+    # 例如: SA49C 表示 Ser at A49 -> Cys
     mutations = [
         f"{res1_letter}{chain}{res1_id}C",
         f"{res2_letter}{chain}{res2_id}C"
@@ -306,6 +347,15 @@ def format_mutations_for_foldx(res1_name: str, res1_id: int,
 # ============================================================
 
 def test_foldx_installation(foldx_path: str = "/usr/local/bin/foldx"):
+    """
+    测试FoldX是否正确安装
+    
+    Args:
+        foldx_path: FoldX可执行文件路径
+    
+    Returns:
+        测试结果字典
+    """
     print("="*70)
     print("FoldX 安装测试")
     print("="*70)
@@ -332,6 +382,15 @@ def test_foldx_installation(foldx_path: str = "/usr/local/bin/foldx"):
 
 
 def debug_foldx_output(work_dir: str, pdb_stem: str):
+    """
+    调试FoldX输出文件
+    
+    显示所有.fxout文件的内容,帮助理解FoldX输出格式
+    
+    Args:
+        work_dir: FoldX工作目录
+        pdb_stem: PDB文件名(不含扩展名)
+    """
     print("="*70)
     print(f"FoldX 输出调试: {pdb_stem}")
     print("="*70)
@@ -368,8 +427,10 @@ if __name__ == "__main__":
     print("FoldX Wrapper Module - Test Model")
     print()
     
+    # 测试安装
     test_foldx_installation()
-
+    
+    # 测试突变格式化
     print("\n突变格式化测试:")
     print("-"*70)
     
