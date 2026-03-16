@@ -66,6 +66,38 @@ class FoldXWrapper:
                 import shutil
                 shutil.copy(pdb_file, work_pdb)
                 
+                # [修复] 复制 rotabase.txt 到工作目录
+                # FoldX 5.1 必须在 cwd 中找到 rotabase.txt 才能正常运行,
+                # 否则会静默退出(~0.5s),不生成任何 .fxout 文件
+                for rotabase_candidate in [
+                    os.path.join(os.path.dirname(self.foldx_path), "rotabase.txt"),
+                    "/usr/local/bin/rotabase.txt",
+                    "/content/rotabase.txt",
+                    "/content/foldx_extracted/rotabase.txt",
+                ]:
+                    if os.path.isfile(rotabase_candidate):
+                        shutil.copy(rotabase_candidate, os.path.join(temp_dir, "rotabase.txt"))
+                        if self.verbose:
+                            print(f"  ✓ rotabase.txt 已复制到工作目录")
+                        break
+                else:
+                    # 递归搜索
+                    for search_dir in ["/content/foldx_extracted", "/content"]:
+                        if os.path.isdir(search_dir):
+                            for root, _dirs, _files in os.walk(search_dir):
+                                if "rotabase.txt" in _files:
+                                    shutil.copy(os.path.join(root, "rotabase.txt"),
+                                                os.path.join(temp_dir, "rotabase.txt"))
+                                    if self.verbose:
+                                        print(f"  ✓ rotabase.txt 找到并复制: {root}")
+                                    break
+                            else:
+                                continue
+                            break
+                    else:
+                        if self.verbose:
+                            print(f"  ⚠️ rotabase.txt 未找到! FoldX 将无法正常运行")
+                
                 mut_file = os.path.join(temp_dir, "individual_list.txt")
                 with open(mut_file, 'w') as f:
                     # FoldX格式: SA49C,SA68C;
@@ -140,7 +172,8 @@ class FoldXWrapper:
         """
         解析FoldX输出文件 - 修复版
         
-        优先查找Dif文件(能量差文件),正确解析tab分隔的数据
+        [修复] 使用前缀匹配代替精确文件名匹配
+        FoldX 5.1 生成的文件名可能带后缀(如 Dif_XynA_1.fxout 而非 Dif_XynA.fxout)
         
         Args:
             work_dir: FoldX工作目录
@@ -149,19 +182,24 @@ class FoldXWrapper:
         Returns:
             ΔΔG值,失败返回None
         """
-        # 优先级1: Dif文件(最可靠)
-        dif_file = os.path.join(work_dir, f"Dif_{pdb_stem}.fxout")
+        # 列出所有 .fxout 文件
+        all_files = os.listdir(work_dir)
+        fxout_files = sorted([f for f in all_files if f.endswith('.fxout')])
         
-        if os.path.exists(dif_file):
-            ddg = self._parse_dif_file(dif_file)
+        if self.verbose and fxout_files:
+            print(f"  找到 {len(fxout_files)} 个 .fxout 文件: {fxout_files}")
+        
+        # 优先级1: Dif文件(最可靠) — 前缀匹配
+        dif_files = [f for f in fxout_files if f.startswith('Dif_')]
+        for dif_file in dif_files:
+            ddg = self._parse_dif_file(os.path.join(work_dir, dif_file))
             if ddg is not None:
                 return ddg
         
-        # 优先级2: Average文件
-        avg_file = os.path.join(work_dir, f"Average_{pdb_stem}.fxout")
-        
-        if os.path.exists(avg_file):
-            ddg = self._parse_average_file(avg_file)
+        # 优先级2: Average文件 — 前缀匹配
+        avg_files = [f for f in fxout_files if f.startswith('Average_')]
+        for avg_file in avg_files:
+            ddg = self._parse_average_file(os.path.join(work_dir, avg_file))
             if ddg is not None:
                 return ddg
         
