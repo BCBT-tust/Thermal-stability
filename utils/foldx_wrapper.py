@@ -19,7 +19,6 @@ class FoldXWrapper:
         self.is_available = self._check_foldx()
     
     def _check_foldx(self) -> bool:
-
         try:
             result = subprocess.run(
                 [self.foldx_path],
@@ -27,9 +26,15 @@ class FoldXWrapper:
                 text=True,
                 timeout=5
             )
+            output = (result.stdout or "") + (result.stderr or "")
             
-            # FoldX通常在没有参数时返回非0,但会有输出
-            if result.stdout or result.stderr:
+            # 检查许可证是否过期
+            if "expired" in output.lower():
+                if self.verbose:
+                    print(f"✗ FoldX 许可证已过期! 请从 https://foldxsuite.crg.eu 重新下载")
+                return False
+            
+            if output:
                 if self.verbose:
                     print(f"✓ FoldX available at: {self.foldx_path}")
                 return True
@@ -45,7 +50,7 @@ class FoldXWrapper:
             if self.verbose:
                 print(f"✗ FoldX check failed: {str(e)}")
             return False
-    
+
     def calculate_ddg(self, pdb_file: str, mutations: List[str], 
                      n_runs: int = 3, timeout: int = 300) -> Dict:
         """
