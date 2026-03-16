@@ -19,6 +19,7 @@ class FoldXWrapper:
         self.is_available = self._check_foldx()
     
     def _check_foldx(self) -> bool:
+
         try:
             result = subprocess.run(
                 [self.foldx_path],
@@ -26,6 +27,8 @@ class FoldXWrapper:
                 text=True,
                 timeout=5
             )
+            
+            # FoldX通常在没有参数时返回非0,但会有输出
             output = (result.stdout or "") + (result.stderr or "")
             
             # 检查许可证是否过期
@@ -50,7 +53,7 @@ class FoldXWrapper:
             if self.verbose:
                 print(f"✗ FoldX check failed: {str(e)}")
             return False
-
+    
     def calculate_ddg(self, pdb_file: str, mutations: List[str], 
                      n_runs: int = 3, timeout: int = 300) -> Dict:
         """
@@ -146,6 +149,8 @@ class FoldXWrapper:
         解析FoldX输出文件 - 修复版
         
         优先查找Dif文件(能量差文件),正确解析tab分隔的数据
+        使用前缀匹配兼容不同FoldX版本的输出文件命名
+        (如 Dif_XynA.fxout 或 Dif_XynA_1.fxout)
         
         Args:
             work_dir: FoldX工作目录
@@ -154,21 +159,24 @@ class FoldXWrapper:
         Returns:
             ΔΔG值,失败返回None
         """
-        # 优先级1: Dif文件(最可靠)
-        dif_file = os.path.join(work_dir, f"Dif_{pdb_stem}.fxout")
+        fxout_files = sorted([f for f in os.listdir(work_dir) if f.endswith('.fxout')])
         
-        if os.path.exists(dif_file):
-            ddg = self._parse_dif_file(dif_file)
-            if ddg is not None:
-                return ddg
+        if self.verbose and fxout_files:
+            print(f"  .fxout 文件: {fxout_files}")
         
-        # 优先级2: Average文件
-        avg_file = os.path.join(work_dir, f"Average_{pdb_stem}.fxout")
+        # 优先级1: Dif文件(最可靠) — 前缀匹配
+        for fname in fxout_files:
+            if fname.startswith('Dif_'):
+                ddg = self._parse_dif_file(os.path.join(work_dir, fname))
+                if ddg is not None:
+                    return ddg
         
-        if os.path.exists(avg_file):
-            ddg = self._parse_average_file(avg_file)
-            if ddg is not None:
-                return ddg
+        # 优先级2: Average文件 — 前缀匹配
+        for fname in fxout_files:
+            if fname.startswith('Average_'):
+                ddg = self._parse_average_file(os.path.join(work_dir, fname))
+                if ddg is not None:
+                    return ddg
         
         # 都失败了
         if self.verbose:
